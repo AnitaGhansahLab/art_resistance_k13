@@ -1,147 +1,158 @@
-import os, sys
+import os
 from optparse import OptionParser
 
-# extract simple name from fasta header
-def getName(title):
+def get_name(title):
+    """
+    Extracts the simple name from a FASTA header.
+
+    Args:
+        title (str): The header of a FASTA sequence.
+
+    Returns:
+        str: The simple name extracted from the header.
+    """
     return title.split()[0][1:].strip()
 
+def count_differences(ref, seq):
+    """
+    Counts the differences between a reference sequence and another sequence.
 
-# count differences
-def difference(ref, seq):
-    if not len(ref) == len(seq):
-        raise Exception("Invalid sequences lengths")
+    Args:
+        ref (str): The reference nucleotide sequence.
+        seq (str): The nucleotide sequence to compare.
+
+    Returns:
+        list: A list of differences formatted as "ref_basepositionalt_base".
+
+    Raises:
+        Exception: If the sequences are not of the same length.
+    """
+    if len(ref) != len(seq):
+        raise Exception("Invalid sequence lengths, sequences must be of equal length.")
 
     diffs = []
     for i in range(len(ref)):
-        if not ref[i] == seq[i]:
-            deffs.append(f"{ref[i]}{i+1}{seq[i]}")
+        if ref[i] != seq[i]:
+            diffs.append(f"{ref[i]}{i+1}{seq[i]}")
     return diffs
 
+def break_fasta(sequence, length=60):
+    """
+    Breaks a sequence into shorter lines of specified length for formatting purposes.
 
-# break fasta sequences into short lengths
-def breakFasta(sequence):
-    LENGTH = 60
-    ln = len(sequence)
+    Args:
+        sequence (str): The nucleotide sequence.
+        length (int, optional): The maximum length of each line. Default is 60.
 
-    seq = ""
-    i = 0
-    while i < ln:
-        if i+LENGTH < ln:
-            seq += f"{sequence[i:i+LENGTH]}\n"
-        else:
-            seq += sequence[i:]
-        i += LENGTH
-    return seq.strip()
+    Returns:
+        str: The formatted sequence with line breaks.
+    """
+    return "\n".join([sequence[i:i+length] for i in range(0, len(sequence), length)])
 
+def run_analysis(ref_sequence, fasta_filename, output_dir, prefix):
+    """
+    Analyzes a FASTA file, comparing each sequence to a reference sequence,
+    and writes results to output files.
 
-# process 
-def runAnalysis(ref_sequence, fasta_filename, out_dir, prefix):
-    HAP_DATA = {}
+    Args:
+        ref_sequence (str): The reference nucleotide sequence.
+        fasta_filename (str): The path to the input FASTA file.
+        output_dir (str): The directory where output files will be saved.
+        prefix (str): The prefix for the output filenames.
+    """
+    hap_data = {}
 
     def process(title, content):
+        """
+        Processes each FASTA entry, adding sequences and their identifiers to the haplotype data.
+
+        Args:
+            title (str): The FASTA header.
+            content (str): The corresponding nucleotide sequence.
+        """
         if not title or not content:
             return
         print(f"Processing {title}...")
 
-        name = getName(title)
-        if content in HAP_DATA:
-            HAP_DATA[content].append(nanme)
+        name = get_name(title)
+        if content in hap_data:
+            hap_data[content].append(name)
         else:
-            HAP_DATA[content] = [name]
+            hap_data[content] = [name]
 
-    # read fasta file
-    with open(fasta_filename) as f:
-        title = None
-        content = ""
-
-        for line in f:
+    # Read and process the FASTA file
+    with open(fasta_filename) as fasta_file:
+        title, content = None, ""
+        for line in fasta_file:
             line = line.strip()
-            if not line: continue
+            if not line:
+                continue
 
             if line.startswith(">"):
                 if title is not None:
                     process(title, content)
-                
-                title = line
-                content = ""
-                continue
+                title, content = line, ""
+            else:
+                content += line
+        process(title, content)  # Process the last entry
 
-            content += line
+    # Write haplotype data to output files
+    with open(os.path.join(output_dir, f"{prefix}-haplotype-sequences-n-ids.tab"), "w") as hap_file, \
+         open(os.path.join(output_dir, f"{prefix}-haplotype-min-sequences-n-ids.tab"), "w") as hap_min_file, \
+         open(os.path.join(output_dir, f"{prefix}-haplotype-ids-n-info.tab"), "w") as hap_info_file, \
+         open(os.path.join(output_dir, f"{prefix}-haplotype-ids-n-names.tab"), "w") as hap_names_file:
 
-        process(title, content)
+        hap_file.write("ID\tHAPLOTYPE\tREF_DIFF\tIS_REF\n")
+        hap_min_file.write("ID\tHAPLOTYPE\tREF_DIFF\tIS_REF\n")
+        hap_info_file.write("ID\tHAP_COUNT\tREF_DIFF\tIS_REF\n")
+        hap_names_file.write("ID\tHAP_COUNT\tHAP_NAMES\tREF_DIFF\tIS_REF\n")
 
-    #
-    hap_file = open(f"{out_dir}/{prefix}-haplotype-sequences-n-ids.tab", "w")
-    hap_min_file = open(f"{out_dir}/{prefix}-haplotype-min-sequences-n-ids.tab", "w")
-    hap_info = open(f"{out_dir}/{prefix}-haplotype-ids-n-info.tab", "w")
-    hap_names = open(f"{out_dir}/{prefix}-haplotype-ids-n-names.tab", "w")
+        counter = 1
+        for hap, names in hap_data.items():
+            hap_id = f"hap_{counter}"
+            name_count = len(names)
+            diffs = count_differences(ref_sequence, hap)
+            diff_count = len(diffs)
+            is_ref = diff_count == 0
 
-    hap_file.write("ID\tHAPLOTYPE\tREF_DIFF\tIS_REF\n")
-    hap_min_file.write("ID\tHAPLOTYPE\tREF_DIFF\tIS_REF\n")
-    hap_info.write("ID\tHAP_COUNT\tREF_DIFF\tIS_REF\n")
-    hap_names.write("ID\tHAP_COUNT\tHAP_NAMES\tREF_DIFF\tIS_REF\n")
+            hap_min = ",".join(diffs) if diffs else "-"
+            hap_file.write(f"{hap_id}\t{hap}\t{diff_count}\t{is_ref}\n")
+            hap_min_file.write(f"{hap_id}\t{hap_min}\t{diff_count}\t{is_ref}\n")
+            hap_info_file.write(f"{hap_id}\t{name_count}\t{diff_count}\t{is_ref}\n")
+            hap_names_file.write(f"{hap_id}\t{name_count}\t{','.join(names)}\t{diff_count}\t{is_ref}\n")
 
-    # save
-    counter = 1
-    for hap in HAP_DATA:
-        hap_id = f"hap_{counter}"
-        names = HAP_DATA[hap]
-        names_count = len(names)
-        diffs = difference(ref_sequence, hap)
-        diff_count = len(diffs)
-        is_ref = diff_count == 0
+            counter += 1
 
-        hap_min = ','.join(diffs)
-        if is_ref:
-            hap_min = "-"
-
-        hap_file.write(f"{hap_id}\t{hap}\t{diff_count}\t{is_ref}\n")
-        hap_min_file.write(f"{hap_id}\t{hap_min}\t{diff_count}\t{is_ref}\n")
-        hap_info.write(f"{hap_id}\t{names_count}\t{diff_count}\t{is_ref}\n")
-        hap_names.write(f"{hap_id}\t{names_count}\t{','.join(names)}\t{diff_count}\t{is_ref}\n")
-
-        counter += 1
-
-    hap_file.close()
-    hap_min_file.close()
-    hap_info.close()
-    hap_names.close()
-
-#main
 def main():
+    """
+    The main function that parses command-line options and initiates the analysis.
+    """
     parser = OptionParser()
-    parser.add_option("-f", "--fasta", dest="fasta", type=str, help="Input fasta file")
-    parser.add_option("-r", "--ref", dest="ref", type=str, help="Nucleotide reference fasta sequence")
-    parser.add_option("-p", "--prefix", dest="prefix", type=str, help="Output names prefix")
-    parser.add_option("-o", "--output", dest="output", type=str, help="Output directory")
-    (options, args) = parser.parse_args()
+    parser.add_option("-f", "--fasta", dest="fasta", type="str", help="Input FASTA file path")
+    parser.add_option("-r", "--ref", dest="ref", type="str", help="Reference nucleotide sequence file path")
+    parser.add_option("-p", "--prefix", dest="prefix", type="str", help="Prefix for output filenames")
+    parser.add_option("-o", "--output", dest="output", type="str", help="Output directory")
+
+    (options, _) = parser.parse_args()
 
     if not options.fasta or not os.path.isfile(options.fasta):
-        parser.print_help()
-        return
-
+        parser.error("Input FASTA file is required and must be a valid file path.")
     if not options.ref or not os.path.isfile(options.ref):
-        parser.print_help()
-        return
-
+        parser.error("Reference nucleotide sequence file is required and must be a valid file path.")
     if not options.output or os.path.isfile(options.output):
-        parser.print_help()
-        return
-
+        parser.error("Output directory is required and should not be a file.")
     if not options.prefix:
-        parser.print_help()
-        return
+        parser.error("Prefix for output filenames is required.")
 
-    # create results dir
-    if not os.path.isdir(options.output):
-        os.makedirs(options.output, exist_ok=True)
+    # Create the output directory if it does not exist
+    os.makedirs(options.output, exist_ok=True)
 
-    # ref sequences
-    REF = ("".join(open(options.ref).readlines()[1:])).replace("\n", "")
+    # Read the reference sequence
+    with open(options.ref) as ref_file:
+        ref_sequence = "".join(ref_file.readlines()[1:]).replace("\n", "")
 
-    # run
-    runAnalysis(REF, options.fasta, options.output, options.prefix)
+    # Run the analysis
+    run_analysis(ref_sequence, options.fasta, options.output, options.prefix)
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
