@@ -1,0 +1,205 @@
+#!/usr/bin/python
+
+import os
+import sys
+import gzip 
+import math
+from optparse import OptionParser
+
+#
+# Convert vcf nucleotides to fasta format
+# Usage:
+#			./vcf_to_fasta --help
+#
+
+
+def println(msg):
+	sys.stderr.write(msg.strip()+'\n')
+
+
+def getDNAPair(n):
+	if n.upper() == 'A': return 'T'
+	if n.upper() == 'C': return 'G'
+	if n.upper() == 'G': return 'C'
+	if n.upper() == 'T' or n.upper() == 'U': return 'A'
+	raise Exception("Error: Invalid DNA nucleotide: "+n)
+	
+
+def getGenotypes(inp, out, REF, start, end):
+	'''
+	Compile the full nucleotide sequences of all samples
+	filling in the non-variant gaps from reference genome
+	'''
+	ALT = '' # altenate genotypes
+	GTs = [] # sample's genotypes
+	snps = 0 # number pf SNPs
+	rpos = start # next reference position
+	for line in inp:
+		if line.startswith("##"): continue
+		line = line.split()
+		if line[0] == "#CHROM":
+			samples = line[9:]
+			for s in samples:
+				GTs.append('')
+				GTs.append('')
+			println (str(len(samples))+" samples in vcf file.")
+			continue
+		
+		pos = int(line[1])
+		if pos < start: continue
+		if pos > end: break
+		
+		plen = pos - rpos
+		if plen > 0:
+			n = rpos - start
+			m = n + plen
+			ALT += REF[n:m]
+			for x in range(len(GTs)):
+				GTs[x] += REF[n:m]
+				
+		rpos = pos + 1 # next reference position
+		rref = REF[pos-start]
+		ref = line[3].strip().upper()
+		alt = line[4].strip().upper()
+		
+		if ref.__contains__(',') or alt.__contains__(','): raise Exception("Only biallelic SNPs required")	
+		if not rref == ref: raise Exception("Reference bases mismatch at position "+str(pos)+" ["+rref+" != "+ref+"]")
+			
+		def get_gt(x):
+			try:
+				x = int(x)
+				if x == 0: return ref
+				else: return alt
+			except: 
+				raise Exception("Iinvalid genotype field in vcf file")
+		
+		ALT += alt
+		for (i,GT) in enumerate(line[9:]):
+			i *= 2
+			GT = GT.split(':')[0]
+			GT = GT.split('|')
+			if len(GT) != 2: raise Exception("Vcf file not phased.")
+			GTs[i] += ''+get_gt(GT[0])
+			GTs[i+1] += ''+get_gt(GT[1])
+		snps += 1
+	
+	println(str(snps)+" SNPs found in vcf file")
+	
+	plen = end - rpos
+	if plen > -1:
+		plen += 1
+		ALT += REF[-plen:]
+		for x in range(len(GTs)):
+			GTs[x] += REF[-plen:]
+	return (samples, GTs, ALT)
+	
+
+def main():
+	parser = OptionParser("./vcf_to_amino_acids --help")
+	parser.add_option('-v', dest="vcf", type=str, help="Vcf[.gz] Input file (default is stdin)")
+	parser.add_option('-o', dest="out", type=str, help="Output file name (default is stdout)")
+	parser.add_option('-r', dest="ref", type=str, help="Reference sequence file name in fasta format (required)")
+	parser.add_option('-s', dest="start", type=int, help="Start locus in reference file (default is 1)")
+	parser.add_option('-e', dest="end", type=int, help="End locus in reference file (default is END)")
+	parser.add_option('--rev', dest="rev", type=str, help="Whether the genotypes are reverse[yes] or forward[no] (default is no)")
+	parser.add_option('--alt', dest="alt", type=str, help="Include altenate genotypes [yes|no](default is no)")
+	(options, args) = parser.parse_args()
+	
+	if sys.stdin.isatty() and not options.vcf:
+		println("Error: Specify input file")
+		parser.print_help() 
+		sys.exit(1)
+		
+	if options.vcf and not os.path.isfile(options.vcf):
+		println("Error: Vcf input file does not exist.")
+		sys.exit(1)
+
+	if not options.ref or not os.path.isfile(options.ref):
+		println("Error: no reference sequence file specified or does not exist.")
+		parser.print_help() 
+		sys.exit(1)
+	
+	start = 1
+	end = -1
+	if options.start and options.start >= 1: start = options.start
+	if options.end and options.end >= 1: end = options.end
+	
+	if end != -1 and start > end:
+		println("Error: Start locus cannot be greater than end locus.")
+		sys.exit(1)
+	
+	isForward = True
+	if options.rev and options.rev.strip().lower() == 'yes':
+		isForward = False
+		
+	addAlt = False
+	if options.alt and options.alt.strip().lower() == 'yes':
+		addAlt = True
+	
+	# process reference file
+	with open(options.ref, 'r') as f:
+		canStart = False
+		REF = ''
+		nc = 0
+		for line in f:
+			line = line.strip()
+			if not line: continue
+			if not canStart:
+				canStart = line.startswith(">")
+				continue
+			for ch in line:
+				nc += 1
+				ch = ch.upper()
+				if not ch in ('A','C','G','T','U'): raise Exception("Error: Invalid nucleotide ("+ch+") found in reference file")
+				if start <= nc and (end == -1 or nc <= end):
+					REF += ch.upper()
+			if end != -1 and nc > end: 
+				break
+		
+		if end == -1: end = start + len(REF) - 1
+		if (end-start+1) != len(REF): raise Exception("Error: Reference file not complete")	
+	
+	if not options.vcf: inp = sys.stdin
+	elif options.vcf.endswith('.gz'): inp = gzip.open(options.vcf, 'r')
+	else: inp = open(options.vcf, 'r')
+	if options.out: out = open(options.out+'.fasta', 'w')
+	else: out = sys.stdout
+	
+	(samples, GTs, ALT) = getGenotypes(inp, out, REF, start, end)
+	
+	def getReverse(seq):
+		tmp = ''
+		for x in range(len(seq)-1, -1, -1):
+			tmp += getDNAPair(seq[x])
+		return tmp
+	
+	def writeOut(out, title, seq, start, end, slen, flen, fcount, isForward):
+		if not isForward: seq = getReverse(seq)
+		out.write(">"+title+" Start:"+str(start)+", End:"+str(end)+", Length:"+str(slen)+"\n")
+		for i in range(fcount):
+			st = i * flen
+			en = st + flen
+			out.write(seq[st:en]+"\n")
+		out.write("\n")
+	
+	slen = len(REF)
+	flen = 200 # length of characters per line
+	fcount = int(math.ceil(1.0*slen/flen))
+		
+	writeOut(out, "Reference", REF, start, end, slen, flen, fcount, isForward)
+	if addAlt: writeOut(out, "Altenate", ALT, start, end, slen, flen, fcount, isForward)
+	for (i, s) in enumerate(samples):
+		i *= 2
+		writeOut(out, s+"_1", GTs[i], start, end, slen, flen, fcount, isForward)
+		writeOut(out, s+"_2", GTs[i+1], start, end, slen, flen, fcount, isForward)
+			
+	if options.vcf: inp.close()
+	if options.out: out.close()
+	println("Done translating file")
+		
+
+if __name__ == "__main__":
+	main()
+	
+	
+
